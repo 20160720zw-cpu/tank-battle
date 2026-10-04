@@ -1,0 +1,1245 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>坦克大战 · 栗子游戏网</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { height:100%; overflow:hidden; background:#000; color:#777; font-family:"Microsoft YaHei","PingFang SC",sans-serif; user-select:none; }
+  #wrap { width:100vw; height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; }
+  #game { display:block; image-rendering:pixelated; image-rendering:crisp-edges; background:#000; }
+  #hint { margin-top:8px; font-size:12px; color:#777; letter-spacing:1px; }
+  kbd { display:inline-block; padding:0 4px; border:1px solid #444; color:#bbb; font-family:monospace; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="256" height="224"></canvas>
+  <div id="hint"><kbd>方向键</kbd>/<kbd>WASD</kbd> 移动　<kbd>J</kbd>/<kbd>空格</kbd> 开火　<kbd>Enter</kbd> 开始/暂停　<kbd>M</kbd> 静音</div>
+</div>
+<script>
+(() => {
+  "use strict";
+  const cv = document.getElementById("game");
+  const ctx = cv.getContext("2d");
+  const W = 256, H = 224, OX = 16, OY = 8, F = 208, N = 52;
+  const GREY = "#636363", RED = "#F83800", ORANGE = "#FCA044", WHITE = "#FCFCFC", BLACK = "#000000";
+  const HKEY = "lizi_tank_highscore";
+  const DIRS = [{x:0,y:-1},{x:1,y:0},{x:0,y:1},{x:-1,y:0}];
+
+  function fit(){
+    const s = Math.min(window.innerWidth / W, (window.innerHeight - 34) / H);
+    const k = s >= 1 ? Math.floor(s) : s;
+    cv.style.width = (W * k) + "px";
+    cv.style.height = (H * k) + "px";
+  }
+  window.addEventListener("resize", fit);
+  fit();
+
+  function rect(x,y,w,h,c){ ctx.fillStyle = c; ctx.fillRect(x, y, w, h); }
+
+  // ---------- 字体 ----------
+  const FONT_SRC = {
+    A:"01110 10001 10001 11111 10001 10001 10001", B:"11110 10001 10001 11110 10001 10001 11110",
+    C:"01110 10001 10000 10000 10000 10001 01110", D:"11110 10001 10001 10001 10001 10001 11110",
+    E:"11111 10000 10000 11110 10000 10000 11111", F:"11111 10000 10000 11110 10000 10000 10000",
+    G:"01110 10001 10000 10111 10001 10001 01111", H:"10001 10001 10001 11111 10001 10001 10001",
+    I:"01110 00100 00100 00100 00100 00100 01110", J:"00111 00010 00010 00010 00010 10010 01100",
+    K:"10001 10010 10100 11000 10100 10010 10001", L:"10000 10000 10000 10000 10000 10000 11111",
+    M:"10001 11011 10101 10101 10001 10001 10001", N:"10001 10001 11001 10101 10011 10001 10001",
+    O:"01110 10001 10001 10001 10001 10001 01110", P:"11110 10001 10001 11110 10000 10000 10000",
+    Q:"01110 10001 10001 10001 10101 10010 01101", R:"11110 10001 10001 11110 10100 10010 10001",
+    S:"01111 10000 10000 01110 00001 00001 11110", T:"11111 00100 00100 00100 00100 00100 00100",
+    U:"10001 10001 10001 10001 10001 10001 01110", V:"10001 10001 10001 10001 10001 01010 00100",
+    W:"10001 10001 10001 10101 10101 10101 01010", X:"10001 10001 01010 00100 01010 10001 10001",
+    Y:"10001 10001 01010 00100 00100 00100 00100", Z:"11111 00001 00010 00100 01000 10000 11111",
+    "0":"01110 10001 10011 10101 11001 10001 01110", "1":"00100 01100 00100 00100 00100 00100 01110",
+    "2":"01110 10001 00001 00010 00100 01000 11111", "3":"11111 00010 00100 00010 00001 10001 01110",
+    "4":"00010 00110 01010 10010 11111 00010 00010", "5":"11111 10000 11110 00001 00001 10001 01110",
+    "6":"00110 01000 10000 11110 10001 10001 01110", "7":"11111 00001 00010 00100 01000 01000 01000",
+    "8":"01110 10001 10001 01110 10001 10001 01110", "9":"01110 10001 10001 01111 00001 00010 01100",
+    "-":"00000 00000 00000 11111 00000 00000 00000", "←":"00000 00100 01000 11111 01000 00100 00000",
+    ".":"00000 00000 00000 00000 00000 01100 01100"
+  };
+  const FONT = {};
+  for (const k in FONT_SRC) FONT[k] = FONT_SRC[k].split(" ");
+
+  function drawText(str, x, y, color){
+    ctx.fillStyle = color;
+    str = String(str);
+    for (let i = 0; i < str.length; i++) {
+      const g = FONT[str[i]];
+      if (!g) continue;
+      for (let r = 0; r < 7; r++) for (let c = 0; c < 5; c++)
+        if (g[r][c] === "1") ctx.fillRect((x + i * 8 + c) | 0, (y + r) | 0, 2, 1);
+    }
+  }
+  function drawTextR(str, right, y, color){ str = String(str); drawText(str, right - str.length * 8, y, color); }
+
+  // ---------- 贴图 ----------
+  function makeTex(rows, colors){
+    const c = document.createElement("canvas");
+    c.width = rows[0].length; c.height = rows.length;
+    const g = c.getContext("2d");
+    for (let y = 0; y < rows.length; y++) for (let x = 0; x < rows[y].length; x++) {
+      const col = colors[rows[y][x]];
+      if (col) { g.fillStyle = col; g.fillRect(x, y, 1, 1); }
+    }
+    return c;
+  }
+  const BRICK_TEX = makeTex([
+    "hhhhhhhd",
+    "mmmmmmmd",
+    "mmmmmmmd",
+    "dddddddd",
+    "hhhdhhhh",
+    "mmmdmmmm",
+    "mmmdmmmm",
+    "dddddddd"
+  ], { h:"#C84C0C", m:"#A43000", d:GREY });
+  const STEEL_TEX = makeTex([
+    "LLLLLLLM",
+    "LMMMMMMD",
+    "LMWWWWMD",
+    "LMWWWWMD",
+    "LMWWWWMD",
+    "LMWWWWMD",
+    "LMMMMMMD",
+    "MDDDDDDD"
+  ], { L:"#FCFCFC", M:"#BCBCBC", W:"#FCFCFC", D:"#7C7C7C" });
+  const WATER_ROWS = [
+    "bbbbbbbb",
+    "bwbbbbbb",
+    "wbwbbbbb",
+    "bbbbbbbb",
+    "bbbbbwbb",
+    "bbbbwbwb",
+    "bbbbbbbb",
+    "bbbbbbbb"
+  ];
+  const WATER_TEX = [
+    makeTex(WATER_ROWS, { b:"#2038EC", w:"#A4E4FC" }),
+    makeTex(WATER_ROWS.map(r => r.slice(4) + r.slice(0, 4)), { b:"#2038EC", w:"#A4E4FC" })
+  ];
+  const GRASS_TEX = makeTex([
+    ".gGg.gGg",
+    "gGGGgGGG",
+    "gGGgkgGg",
+    ".gk..gk.",
+    "gGg.gGg.",
+    "GGGgGGGg",
+    "gGgkgGgk",
+    ".k...k.."
+  ], { g:"#00A800", G:"#80D010", k:"#005800" });
+
+  const TANK_ART = {
+    player: [
+      "................",
+      ".......33.......",
+      ".......33.......",
+      ".TTT...33...TTT.",
+      ".TTT..2332..TTT.",
+      ".TTT.233332.TTT.",
+      ".TTT23333332TTT.",
+      ".TTT23311332TTT.",
+      ".TTT23111132TTT.",
+      ".TTT23311332TTT.",
+      ".TTT23333332TTT.",
+      ".TTT.222222.TTT.",
+      ".TTT..1111..TTT.",
+      ".TTT........TTT.",
+      ".TTT........TTT.",
+      "................"
+    ],
+    basic: [
+      "................",
+      ".......33.......",
+      ".TTT...33...TTT.",
+      ".TTT...33...TTT.",
+      ".TTT...33...TTT.",
+      ".TTT22333322TTT.",
+      ".TTT23311332TTT.",
+      ".TTT23122132TTT.",
+      ".TTT23122132TTT.",
+      ".TTT23311332TTT.",
+      ".TTT22333322TTT.",
+      ".TTT21222212TTT.",
+      ".TTT11111111TTT.",
+      ".TTT........TTT.",
+      ".TTT........TTT.",
+      "................"
+    ],
+    fast: [
+      ".......33.......",
+      ".......33.......",
+      ".......33.......",
+      "..TT...33...TT..",
+      "..TT...33...TT..",
+      "..TT.233332.TT..",
+      "..TT.231132.TT..",
+      "..TT.231132.TT..",
+      "..TT.233332.TT..",
+      "..TT.223322.TT..",
+      "..TT..2222..TT..",
+      "..TT..2112..TT..",
+      "..TT..1111..TT..",
+      "..TT........TT..",
+      "..TT........TT..",
+      "................"
+    ],
+    power: [
+      "................",
+      "......3333......",
+      "......3223......",
+      "TTTT..3223..TTTT",
+      "TTTT22333322TTTT",
+      "TTTT23333332TTTT",
+      "TTTT33122133TTTT",
+      "TTTT31222213TTTT",
+      "TTTT31222213TTTT",
+      "TTTT33122133TTTT",
+      "TTTT23333332TTTT",
+      "TTTT22222222TTTT",
+      "TTTT21111112TTTT",
+      "TTTT........TTTT",
+      "TTTT........TTTT",
+      "................"
+    ],
+    armor: [
+      "................",
+      "......3333......",
+      "......3333......",
+      "TTTT..3333..TTTT",
+      "TTTT33333333TTTT",
+      "TTTT31111113TTTT",
+      "TTTT31333313TTTT",
+      "TTTT31322313TTTT",
+      "TTTT31322313TTTT",
+      "TTTT31333313TTTT",
+      "TTTT31111113TTTT",
+      "TTTT33333333TTTT",
+      "TTTT22222222TTTT",
+      "TTTT11111111TTTT",
+      "TTTT........TTTT",
+      "................"
+    ]
+  };
+  const PAL = {
+    player: [null, "#AC7C00", "#F8B800", "#F8D878"],
+    enemy:  [null, "#004058", "#BCBCBC", "#FCFCFC"],
+    red:    [null, "#881400", "#F83800", "#FCFCFC"],
+    green:  [null, "#005800", "#00A800", "#B8F818"],
+    gold:   [null, "#AC7C00", "#F8B800", "#FCFCFC"]
+  };
+  function rotGrid(g){ const n = g.length; return g.map((_, r) => g.map((__, c) => g[n - 1 - c][r])); }
+  function gridCanvas(grid, pal){
+    const c = document.createElement("canvas");
+    c.width = grid[0].length; c.height = grid.length;
+    const g = c.getContext("2d");
+    for (let y = 0; y < grid.length; y++) for (let x = 0; x < grid[y].length; x++) {
+      const v = grid[y][x];
+      if (v) { g.fillStyle = pal[v]; g.fillRect(x, y, 1, 1); }
+    }
+    return c;
+  }
+  const spriteCache = new Map();
+  function getTank(art, pal, dir, frame){
+    const key = art + "|" + pal + "|" + dir + "|" + frame;
+    let c = spriteCache.get(key);
+    if (c) return c;
+    let grid = TANK_ART[art].map((row, r) => [...row].map(ch =>
+      ch === "." ? 0 : ch === "T" ? (((r + frame) & 1) ? 1 : 3) : +ch));
+    for (let i = 0; i < dir; i++) grid = rotGrid(grid);
+    c = gridCanvas(grid, PAL[pal]);
+    spriteCache.set(key, c);
+    return c;
+  }
+
+  const EAGLE = makeTex([
+    "................",
+    ".2............2.",
+    ".22....33....22.",
+    ".222..3113..222.",
+    ".2222.3333.2222.",
+    ".22222.33.22222.",
+    "..222223322222..",
+    "...2222332222...",
+    "....22233222....",
+    ".....222222.....",
+    "......2222......",
+    ".....22..22.....",
+    "....22....22....",
+    "...1111111111...",
+    "..111111111111..",
+    "................"
+  ], { 1:"#7C7C7C", 2:"#BCBCBC", 3:"#FCFCFC" });
+  const EAGLE_DEAD = makeTex([
+    "................",
+    "................",
+    "................",
+    "................",
+    "......2..2......",
+    "...2..12212..2..",
+    "....2.11111.2...",
+    "..21111111112...",
+    "...111121111....",
+    "..1112111211....",
+    ".112111111211...",
+    ".1111121111111..",
+    "..111111111111..",
+    "...1111111111...",
+    "..111111111111..",
+    "................"
+  ], { 1:"#5C5C5C", 2:"#A81000" });
+
+  const POWER_PAL = { 1:WHITE, 2:"#A4A4A4", 3:RED };
+  const POWER_TEX = {
+    star: makeTex([
+      "................",
+      ".......1........",
+      "......111.......",
+      "......111.......",
+      ".....11111......",
+      "111111111111111.",
+      ".1111111111111..",
+      "..11111111111...",
+      "...111111111....",
+      "...111111111....",
+      "..11111.11111...",
+      "..1111...1111...",
+      ".1111.....1111..",
+      ".11.........11..",
+      "................",
+      "................"
+    ], POWER_PAL),
+    grenade: makeTex([
+      "................",
+      "........11......",
+      ".......1..1.....",
+      "......111111....",
+      ".....11222211...",
+      "....1122222211..",
+      "....1222222221..",
+      "...112222222211.",
+      "...122222222221.",
+      "...122222222221.",
+      "...112222222211.",
+      "....1222222221..",
+      "....1122222211..",
+      ".....11111111...",
+      "................",
+      "................"
+    ], POWER_PAL),
+    helmet: makeTex([
+      "................",
+      "................",
+      ".....111111.....",
+      "...1122222211...",
+      "..112222222211..",
+      "..122222222221..",
+      ".11222222222211.",
+      ".12222222222221.",
+      ".12222222222221.",
+      ".11111111111111.",
+      ".13333333333331.",
+      ".11111111111111.",
+      "................",
+      "................",
+      "................",
+      "................"
+    ], POWER_PAL),
+    shovel: makeTex([
+      "................",
+      "......1111......",
+      "......1..1......",
+      "......1111......",
+      ".......11.......",
+      ".......11.......",
+      ".......11.......",
+      ".......11.......",
+      ".....111111.....",
+      "....12222221....",
+      "....12222221....",
+      "....12222221....",
+      ".....122221.....",
+      "......1221......",
+      ".......11.......",
+      "................"
+    ], POWER_PAL),
+    timer: makeTex([
+      ".......11.......",
+      ".....111111.....",
+      "....11222211....",
+      "...1222122221...",
+      "..122221222221..",
+      "..122221222221..",
+      "..122221222221..",
+      "..122221111221..",
+      "..122222222221..",
+      "..122222222221..",
+      "...1222222221...",
+      "....11222211....",
+      ".....111111.....",
+      "................",
+      "................",
+      "................"
+    ], POWER_PAL),
+    tank: makeTex([
+      "................",
+      "................",
+      ".......11.......",
+      ".......11.......",
+      ".11...1111...11.",
+      ".11.11222211.11.",
+      ".11112222221111.",
+      ".11112211221111.",
+      ".11112211221111.",
+      ".11112222221111.",
+      ".11.11111111.11.",
+      ".11..........11.",
+      ".11..........11.",
+      "................",
+      "................",
+      "................"
+    ], POWER_PAL)
+  };
+  const POWER_KINDS = Object.keys(POWER_TEX);
+
+  const ICON_ROWS = [
+    "...11...",
+    "1..11..1",
+    "1.1111.1",
+    "11111111",
+    "11111111",
+    "1.1111.1",
+    "1......1",
+    "........"
+  ];
+  const ENEMY_ICON = makeTex(ICON_ROWS, { 1:BLACK });
+  const LIFE_ICON = makeTex(ICON_ROWS, { 1:"#E45C10" });
+  const FLAG = makeTex([
+    ".11.............",
+    ".1122222........",
+    ".11222222222....",
+    ".11222222222222.",
+    ".11222222222....",
+    ".1122222........",
+    ".11.............",
+    ".11.............",
+    ".11.............",
+    ".11.............",
+    ".11.............",
+    "1111............",
+    "1111............",
+    "................",
+    "................",
+    "................"
+  ], { 1:BLACK, 2:"#E45C10" });
+
+  function shieldFrame(f){
+    const c = document.createElement("canvas");
+    c.width = c.height = 20;
+    const g = c.getContext("2d");
+    g.fillStyle = WHITE;
+    for (let y = 0; y < 20; y++) for (let x = 0; x < 20; x++) {
+      const d = Math.hypot(x - 9.5, y - 9.5);
+      if (Math.abs(d - 9) < 0.8 && ((x + y + f) % 3 === 0)) g.fillRect(x, y, 1, 1);
+    }
+    return c;
+  }
+  const SHIELD = [shieldFrame(0), shieldFrame(1), shieldFrame(2)];
+
+  function makeBig(str){
+    const c = document.createElement("canvas");
+    c.width = str.length * 24 - 4; c.height = 28;
+    const g = c.getContext("2d");
+    g.fillStyle = g.createPattern(BRICK_TEX, "repeat");
+    for (let i = 0; i < str.length; i++) {
+      const gl = FONT[str[i]];
+      if (!gl) continue;
+      for (let r = 0; r < 7; r++) for (let col = 0; col < 5; col++)
+        if (gl[r][col] === "1") g.fillRect(i * 24 + col * 4, r * 4, 4, 4);
+    }
+    return c;
+  }
+  const BIG = { battle:makeBig("BATTLE"), city:makeBig("CITY"), game:makeBig("GAME"), over:makeBig("OVER") };
+
+  // ---------- 关卡 ----------
+  const STAGES = [
+    [
+      "..........................",
+      "..........................",
+      "..##..##..##..##..##..##..",
+      "..##..##..##..##..##..##..",
+      "..##..##..##..##..##..##..",
+      "..##..##..##@@##..##..##..",
+      "..##..##..##@@##..##..##..",
+      "..##..##..##..##..##..##..",
+      "..##..##..........##..##..",
+      "..##..##..........##..##..",
+      "..........##..##..........",
+      "..........##..##..........",
+      "##..####..........####..##",
+      "@@..####..........####..@@",
+      "..........##..##..........",
+      "..........######..........",
+      "..##..##..##..##..##..##..",
+      "..##..##..##..##..##..##..",
+      "..##..##..##..##..##..##..",
+      "..##..##..........##..##..",
+      "..##..##..........##..##..",
+      "..##..##..........##..##..",
+      "..##..##..........##..##..",
+      "..........................",
+      "..........................",
+      ".........................."
+    ],
+    [
+      "..........................",
+      "..........................",
+      "....##..........##........",
+      "....##..........##........",
+      "@@..##...~~~~...##..@@....",
+      "@@..##...~~~~...##..@@....",
+      "....##..........##........",
+      "....##..........##........",
+      "......####..####..........",
+      "......####..####..........",
+      "##......................##",
+      "##......................##",
+      "~~~~......@@@@......~~~~..",
+      "~~~~......@@@@......~~~~..",
+      "##......................##",
+      "##......................##",
+      "....##..........##........",
+      "....##..........##........",
+      "....##...######...##......",
+      "....##...#....#...##......",
+      ".........####.............",
+      "..........................",
+      "..........................",
+      "..........................",
+      "..........................",
+      ".........................."
+    ],
+    [
+      "..........................",
+      "..%%%%..............%%%%..",
+      "..##..##..@@@@..##..##....",
+      "..##..##..@@@@..##..##....",
+      "..##..##........##..##....",
+      "..##..##........##..##....",
+      "......##..####..##........",
+      "......##..####..##........",
+      "##......................##",
+      "##......%%%%%%%%........##",
+      "....@@@@........@@@@......",
+      "....@@@@........@@@@......",
+      "..##................##....",
+      "..##................##....",
+      "......##..~~~~..##........",
+      "......##..~~~~..##........",
+      "..##..##........##..##....",
+      "..##..##........##..##....",
+      "..%%%%..........%%%%......",
+      "..........................",
+      "...........####...........",
+      "..........................",
+      "..........................",
+      "..........................",
+      "..........................",
+      ".........................."
+    ],
+    [
+      "..........................",
+      "@@....................@@..",
+      "@@..##..........##..@@....",
+      "....##..~~~~~~..##........",
+      "....##..~~~~~~..##........",
+      "....##..........##........",
+      "########......########....",
+      "########......########....",
+      "......@@......@@..........",
+      "......@@......@@..........",
+      "##......%%%%%%......##....",
+      "##......%%%%%%......##....",
+      "~~~~..............~~~~....",
+      "~~~~..............~~~~....",
+      "##..................##....",
+      "##....##......##....##....",
+      "......##@@@@@@##..........",
+      "......##......##..........",
+      "..##..............##......",
+      "..##..............##......",
+      "..........................",
+      "..........................",
+      "..........................",
+      "..........................",
+      "..........................",
+      ".........................."
+    ],
+    [
+      "..........................",
+      "..##..@@..##..@@..##..##..",
+      "..##..@@..##..@@..##..##..",
+      "..........................",
+      "~~~~..##......##......~~~~",
+      "~~~~..##......##......~~~~",
+      "..@@......%%%%......@@....",
+      "..@@......%%%%......@@....",
+      "..##..##......##..##......",
+      "..##..##......##..##......",
+      "..........@@@@............",
+      "..........@@@@............",
+      "##..%%%%..........%%%%..##",
+      "##..%%%%..........%%%%..##",
+      "......##..~~~~..##........",
+      "......##..~~~~..##........",
+      "..##..............##......",
+      "..##..########....##......",
+      "......##......##..........",
+      "......##......##..........",
+      "..........................",
+      "..........................",
+      "..........................",
+      "..........................",
+      "..........................",
+      ".........................."
+    ]
+  ];
+  const TYPES = ["basic", "fast", "power", "armor"];
+  const EK = {
+    basic: { speed:0.5,  bspeed:2, hp:1, score:100 },
+    fast:  { speed:1.0,  bspeed:2, hp:1, score:200 },
+    power: { speed:0.75, bspeed:4, hp:1, score:300 },
+    armor: { speed:0.75, bspeed:2, hp:4, score:400 }
+  };
+  const ENEMY_SET = [[18,2,0,0],[14,4,0,2],[14,4,0,2],[2,5,10,3],[8,5,5,2]];
+  const SPAWNS = [[96,0],[192,0],[0,0]];
+  const BASE_WALL = [[11,23],[12,23],[13,23],[14,23],[11,24],[11,25],[14,24],[14,25]];
+
+  // ---------- 状态 ----------
+  const ter = new Uint8Array(N * N);
+  let state = "menu", tick = 0, menuY = H, intro = 0, overT = 0;
+  let stage = 1, score = 0, lives = 3, nextLife = 20000, playerStar = 0;
+  let hi = Math.max(20000, Number(localStorage.getItem(HKEY) || 0));
+  let tanks = [], bullets = [], fx = [], pops = [], power = null, player = null;
+  let queue = [], spawnIdx = 0, spawnedCount = 0, spawnTimer = 0, respawnT = 0;
+  let baseAlive = true, freeze = 0, shovel = 0, kills = [0,0,0,0], clearT = 0, over = null, tally = null;
+
+  const terCv = document.createElement("canvas"); terCv.width = terCv.height = F;
+  const tctx = terCv.getContext("2d");
+  const grassCv = document.createElement("canvas"); grassCv.width = grassCv.height = F;
+  const gctx = grassCv.getContext("2d");
+  let terDirty = true, waterFrame = 0, hasWater = false;
+
+  function cellType(cx, cy){ if (cx < 0 || cy < 0 || cx >= N || cy >= N) return 0; return ter[cy * N + cx]; }
+  function setCell(cx, cy, t){ if (cx < 0 || cy < 0 || cx >= N || cy >= N) return; ter[cy * N + cx] = t; terDirty = true; }
+  function fillTile(tx, ty, t){ for (let j = 0; j < 2; j++) for (let i = 0; i < 2; i++) setCell(tx * 2 + i, ty * 2 + j, t); }
+  function setBaseWall(t){ for (const [tx, ty] of BASE_WALL) fillTile(tx, ty, t); }
+
+  function loadMap(rows){
+    ter.fill(0);
+    for (let ty = 0; ty < 26; ty++) {
+      const row = rows[ty] || "";
+      for (let tx = 0; tx < 26; tx++) {
+        const ch = row[tx] || ".";
+        const t = ch === "#" ? 1 : ch === "@" ? 2 : ch === "~" ? 3 : ch === "%" ? 4 : 0;
+        if (t) fillTile(tx, ty, t);
+      }
+    }
+    for (const [tx, ty] of [[0,0],[12,0],[24,0],[8,24],[12,24]])
+      for (let j = 0; j < 2; j++) for (let i = 0; i < 2; i++) fillTile(tx + i, ty + j, 0);
+    setBaseWall(1);
+    hasWater = ter.includes(3);
+    gctx.clearRect(0, 0, F, F);
+    for (let cy = 0; cy < N; cy++) for (let cx = 0; cx < N; cx++)
+      if (ter[cy * N + cx] === 4) gctx.drawImage(GRASS_TEX, (cx & 1) * 4, (cy & 1) * 4, 4, 4, cx * 4, cy * 4, 4, 4);
+    terDirty = true;
+  }
+  function renderTerrain(){
+    const wf = (tick >> 5) & 1;
+    if (wf !== waterFrame) { waterFrame = wf; if (hasWater) terDirty = true; }
+    if (!terDirty) return;
+    terDirty = false;
+    tctx.clearRect(0, 0, F, F);
+    for (let cy = 0; cy < N; cy++) for (let cx = 0; cx < N; cx++) {
+      const t = ter[cy * N + cx];
+      const tex = t === 1 ? BRICK_TEX : t === 2 ? STEEL_TEX : t === 3 ? WATER_TEX[waterFrame] : null;
+      if (tex) tctx.drawImage(tex, (cx & 1) * 4, (cy & 1) * 4, 4, 4, cx * 4, cy * 4, 4, 4);
+    }
+  }
+
+  // ---------- 声音 ----------
+  let ac = null, muted = false, eng = null, noiseBuf = null;
+  function initAudio(){
+    if (ac) return;
+    try { ac = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return; }
+    const o = ac.createOscillator(), f = ac.createBiquadFilter(), g = ac.createGain();
+    o.type = "sawtooth"; f.type = "lowpass"; f.frequency.value = 260; g.gain.value = 0;
+    o.connect(f); f.connect(g); g.connect(ac.destination); o.start();
+    eng = { o, g };
+  }
+  function tone(freq, dur, type, vol, to, delay){
+    if (!ac || muted) return;
+    const t0 = ac.currentTime + (delay || 0);
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.type = type || "square";
+    o.frequency.setValueAtTime(freq, t0);
+    if (to) o.frequency.exponentialRampToValueAtTime(to, t0 + dur);
+    g.gain.setValueAtTime(vol || 0.05, t0);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.connect(g); g.connect(ac.destination);
+    o.start(t0); o.stop(t0 + dur + 0.02);
+  }
+  function noise(dur, vol, freq){
+    if (!ac || muted) return;
+    if (!noiseBuf) {
+      noiseBuf = ac.createBuffer(1, ac.sampleRate, ac.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const t0 = ac.currentTime;
+    const s = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
+    s.buffer = noiseBuf; f.type = "lowpass"; f.frequency.value = freq;
+    g.gain.setValueAtTime(vol, t0); g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    s.connect(f); f.connect(g); g.connect(ac.destination);
+    s.start(t0); s.stop(t0 + dur + 0.02);
+  }
+  function seq(notes, step, type, vol){ notes.forEach((n, i) => tone(n, step * 0.95, type || "square", vol || 0.05, null, i * step)); }
+  const SFX = {
+    fire:  () => tone(660, 0.06, "square", 0.05, 220),
+    brick: () => noise(0.09, 0.18, 1800),
+    steel: () => tone(1400, 0.05, "square", 0.04, 900),
+    armor: () => tone(900, 0.05, "square", 0.05, 600),
+    boom:  () => { noise(0.45, 0.3, 700); tone(120, 0.35, "triangle", 0.12, 40); },
+    bonus: () => seq([1046, 1318, 1568, 2093], 0.05),
+    pick:  () => seq([523, 659, 784, 1046, 1318], 0.05),
+    life:  () => seq([784, 988, 1175, 1568, 1175, 1568], 0.08),
+    start: () => seq([392, 523, 659, 523, 659, 784, 1046], 0.11),
+    pause: () => seq([784, 523], 0.1),
+    tick:  () => tone(1200, 0.03, "square", 0.03),
+    over:  () => seq([523, 392, 330, 262], 0.18, "triangle", 0.08)
+  };
+  function sfx(n){ if (SFX[n]) SFX[n](); }
+  function engine(on, moving){
+    if (!eng) return;
+    eng.g.gain.setTargetAtTime(on && !muted ? 0.025 : 0, ac.currentTime, 0.05);
+    eng.o.frequency.setTargetAtTime(moving ? ((tick & 4) ? 62 : 70) : 45, ac.currentTime, 0.03);
+  }
+
+  // ---------- 输入 ----------
+  const held = new Set(), dirStack = [];
+  const DIRKEY = { ArrowUp:0, KeyW:0, ArrowRight:1, KeyD:1, ArrowDown:2, KeyS:2, ArrowLeft:3, KeyA:3 };
+  const FIREKEY = ["Space", "KeyJ", "KeyZ", "KeyK"];
+  function currentDir(){ return dirStack.length ? DIRKEY[dirStack[dirStack.length - 1]] : -1; }
+  function fireHeld(){ return FIREKEY.some(k => held.has(k)); }
+
+  // ---------- 坦克 ----------
+  function makeTank(type, x, y){
+    const p = type === "player", k = p ? null : EK[type];
+    return { type, x, y, dir:p ? 0 : 2, isPlayer:p, speed:p ? 0.75 : k.speed, acc:0,
+      hp:p ? 1 : k.hp, score:p ? 0 : k.score, bonus:false, shield:0, armor:false,
+      star:p ? playerStar : 0, alive:true, spawnT:60, anim:0, moving:false, ai:0, blockedT:0, cool:0 };
+  }
+  function spawnPlayer(){ player = makeTank("player", 64, 192); tanks.push(player); }
+  function enemiesOnField(){ return tanks.filter(t => !t.isPlayer && t.alive).length; }
+  function trySpawnEnemy(){
+    if (!queue.length || enemiesOnField() >= 4) return;
+    const [x, y] = SPAWNS[spawnIdx % 3]; spawnIdx++;
+    const e = makeTank(queue.shift(), x, y);
+    e.bonus = spawnedCount === 3 || spawnedCount === 10 || spawnedCount === 17;
+    spawnedCount++;
+    if (e.bonus) power = null;
+    tanks.push(e);
+  }
+
+  function overlapBase(x, y, w, h){ return x < 112 && x + w > 96 && y < 208 && y + h > 192; }
+  function overlaps(a, x, y){ return x < a.x + 16 && x + 16 > a.x && y < a.y + 16 && y + 16 > a.y; }
+  function rectFree(x, y, self){
+    if (x < 0 || y < 0 || x + 16 > F || y + 16 > F) return false;
+    for (let cy = y >> 2; cy <= (y + 15) >> 2; cy++)
+      for (let cx = x >> 2; cx <= (x + 15) >> 2; cx++) {
+        const t = ter[cy * N + cx];
+        if (t === 1 || t === 2 || t === 3) return false;
+      }
+    if (overlapBase(x, y, 16, 16)) return false;
+    for (const o of tanks) {
+      if (o === self || !o.alive) continue;
+      if (overlaps(o, x, y) && !overlaps(o, self.x, self.y)) return false;
+    }
+    return true;
+  }
+  function moveTank(t){
+    const d = DIRS[t.dir];
+    let blocked = false;
+    t.acc += t.speed;
+    while (t.acc >= 1) {
+      t.acc -= 1;
+      const nx = t.x + d.x, ny = t.y + d.y;
+      if (rectFree(nx, ny, t)) { t.x = nx; t.y = ny; }
+      else { blocked = true; t.acc = 0; break; }
+    }
+    return blocked;
+  }
+  function turn(t, nd){
+    if (nd === t.dir) return;
+    if ((nd & 1) !== (t.dir & 1)) {
+      if (nd & 1) { const sy = Math.round(t.y / 8) * 8; if (sy !== t.y && rectFree(t.x, sy, t)) t.y = sy; }
+      else { const sx = Math.round(t.x / 8) * 8; if (sx !== t.x && rectFree(sx, t.y, t)) t.x = sx; }
+    }
+    t.dir = nd;
+  }
+  function fire(t){
+    const max = t.isPlayer && t.star >= 2 ? 2 : 1;
+    if (bullets.filter(b => b.owner === t).length >= max) return;
+    const d = DIRS[t.dir];
+    const sp = t.isPlayer ? (t.star >= 1 ? 4 : 2) : EK[t.type].bspeed;
+    bullets.push({ x:t.x + 8 + d.x * 6, y:t.y + 8 + d.y * 6, dx:d.x, dy:d.y, sp, owner:t,
+      isPlayer:t.isPlayer, power:t.isPlayer && t.star >= 3, alive:true });
+    t.cool = t.isPlayer ? 8 : 16;
+    if (t.isPlayer) sfx("fire");
+  }
+
+  function boom(x, y, big, sc){ fx.push({ x, y, t:0, big, score:sc || 0, seed:(Math.random() * 1e6) | 0 }); }
+  function addScore(n){
+    score += n;
+    if (score >= nextLife) { lives++; nextLife += 20000; sfx("life"); }
+  }
+  function saveHigh(){ if (score > hi) { hi = score; localStorage.setItem(HKEY, String(hi)); } }
+
+  function hitPlayer(){
+    if (!player || !player.alive || player.spawnT > 0 || player.shield > 0 || player.armor) return;
+    boom(player.x + 8, player.y + 8, true); sfx("boom");
+    player.alive = false;
+    tanks = tanks.filter(t => t !== player);
+    player = null; playerStar = 0;
+    lives--;
+    if (lives > 0) respawnT = 60; else startOver();
+  }
+  function hitEnemy(t){
+    if (t.bonus) { t.bonus = false; spawnPower(); }
+    t.hp--;
+    if (t.hp > 0) { sfx("armor"); return; }
+    t.alive = false;
+    kills[TYPES.indexOf(t.type)]++;
+    addScore(t.score);
+    boom(t.x + 8, t.y + 8, true, t.score); sfx("boom");
+    tanks = tanks.filter(o => o !== t);
+  }
+  function destroyBase(){
+    if (!baseAlive) return;
+    baseAlive = false;
+    boom(104, 200, true); sfx("boom");
+    startOver();
+  }
+  function startOver(){
+    if (over) return;
+    over = { y:F, t:0 };
+    sfx("over");
+  }
+
+  function spawnPower(){
+    power = { kind:POWER_KINDS[(Math.random() * POWER_KINDS.length) | 0],
+      x:((Math.random() * 25) | 0) * 8, y:((Math.random() * 25) | 0) * 8 };
+    if (power.x > 192) power.x = 192;
+    if (power.y > 192) power.y = 192;
+    sfx("bonus");
+  }
+  function applyPower(kind){
+    if (kind === "star") { player.star = Math.min(3, player.star + 1); playerStar = player.star; }
+    if (kind === "grenade") {
+      for (const t of tanks) if (!t.isPlayer && t.alive && t.spawnT <= 0) { t.alive = false; boom(t.x + 8, t.y + 8, true); }
+      tanks = tanks.filter(t => t.alive);
+      sfx("boom");
+    }
+    if (kind === "helmet") { player.shield = 600; player.armor = true; }
+    if (kind === "shovel") { shovel = 1200; setBaseWall(2); }
+    if (kind === "timer") freeze = 600;
+    if (kind === "tank") { lives++; sfx("life"); }
+    else sfx("pick");
+    addScore(500);
+    pops.push({ x:power.x + 8, y:power.y + 8, t:40, text:"500" });
+  }
+
+  function bulletHitsTile(b){
+    let lead, c0, c1, s0, s1, vertical = b.dy !== 0;
+    if (vertical) {
+      lead = (b.dy < 0 ? b.y - 2 : b.y + 1) >> 2;
+      c0 = (b.x - 2) >> 2; c1 = (b.x + 1) >> 2;
+      s0 = (b.x - 8) >> 2; s1 = (b.x + 7) >> 2;
+    } else {
+      lead = (b.dx < 0 ? b.x - 2 : b.x + 1) >> 2;
+      c0 = (b.y - 2) >> 2; c1 = (b.y + 1) >> 2;
+      s0 = (b.y - 8) >> 2; s1 = (b.y + 7) >> 2;
+    }
+    const at = (a, l) => vertical ? cellType(a, l) : cellType(l, a);
+    let hit = false;
+    for (let a = c0; a <= c1; a++) { const t = at(a, lead); if (t === 1 || t === 2) hit = true; }
+    if (!hit) return false;
+    let broke = false;
+    const step = vertical ? b.dy : b.dx;
+    const depth = b.power ? 2 : 1;
+    for (let k = 0; k < depth; k++) {
+      const l = lead + k * step;
+      for (let a = s0; a <= s1; a++) {
+        if (at(a, l) === 1) {
+          if (vertical) setCell(a, l, 0); else setCell(l, a, 0);
+          broke = true;
+        }
+      }
+    }
+    b.alive = false;
+    boom(b.x, b.y, false);
+    if (b.isPlayer) sfx(broke ? "brick" : "steel");
+    return true;
+  }
+  function stepBullet(b){
+    if (b.x - 2 < 0 || b.y - 2 < 0 || b.x + 2 > F || b.y + 2 > F) {
+      b.alive = false;
+      boom(Math.max(0, Math.min(F, b.x)), Math.max(0, Math.min(F, b.y)), false);
+      if (b.isPlayer) sfx("steel");
+      return;
+    }
+    if (bulletHitsTile(b)) return;
+    if (baseAlive && overlapBase(b.x - 2, b.y - 2, 4, 4)) { b.alive = false; destroyBase(); return; }
+    for (const t of tanks) {
+      if (!t.alive || t.spawnT > 0 || t.isPlayer === b.isPlayer) continue;
+      if (b.x - 2 < t.x + 16 && b.x + 2 > t.x && b.y - 2 < t.y + 16 && b.y + 2 > t.y) {
+        b.alive = false;
+        if (t.isPlayer) { if (t.shield <= 0 && !t.armor) hitPlayer(); }
+        else hitEnemy(t);
+        return;
+      }
+    }
+  }
+  function updateBullets(){
+    for (const b of bullets) {
+      for (let s = 0; s < b.sp && b.alive; s++) { b.x += b.dx; b.y += b.dy; stepBullet(b); }
+    }
+    for (let i = 0; i < bullets.length; i++) for (let j = i + 1; j < bullets.length; j++) {
+      const a = bullets[i], c = bullets[j];
+      if (!a.alive || !c.alive || a.isPlayer === c.isPlayer) continue;
+      if (Math.abs(a.x - c.x) < 4 && Math.abs(a.y - c.y) < 4) { a.alive = false; c.alive = false; }
+    }
+    bullets = bullets.filter(b => b.alive);
+  }
+
+  function updatePlayer(){
+    const t = player;
+    if (!t || !t.alive) return;
+    t.moving = false;
+    if (t.spawnT > 0) { t.spawnT--; if (t.spawnT === 0) t.shield = 180; return; }
+    if (t.shield > 0) { t.shield--; if (t.shield === 0) t.armor = false; }
+    if (t.cool > 0) t.cool--;
+    if (over) return;
+    const nd = currentDir();
+    if (nd >= 0) { turn(t, nd); moveTank(t); t.anim++; t.moving = true; }
+    if (fireHeld() && t.cool <= 0) fire(t);
+  }
+  function chooseDir(t){
+    const r = Math.random(), cx = t.x + 8, cy = t.y + 8;
+    if (r < 0.45) {
+      const dx = 104 - cx, dy = 200 - cy;
+      if (Math.abs(dx) > 8 && Math.random() < 0.5) return dx > 0 ? 1 : 3;
+      return dy > 0 ? 2 : (dx > 0 ? 1 : 3);
+    }
+    if (r < 0.6 && player) {
+      const dx = player.x - t.x, dy = player.y - t.y;
+      return Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 1 : 3) : (dy > 0 ? 2 : 0);
+    }
+    return (Math.random() * 4) | 0;
+  }
+  function updateEnemies(){
+    for (const t of tanks) {
+      if (t.isPlayer || !t.alive) continue;
+      if (t.spawnT > 0) { t.spawnT--; continue; }
+      if (t.cool > 0) t.cool--;
+      if (freeze > 0) continue;
+      t.ai--;
+      const blocked = moveTank(t);
+      t.anim++;
+      t.blockedT = blocked ? t.blockedT + 1 : 0;
+      if (t.ai <= 0 || (t.blockedT > 0 && Math.random() < 0.12)) {
+        t.ai = 48 + ((Math.random() * 144) | 0);
+        t.blockedT = 0;
+        turn(t, chooseDir(t));
+      }
+      if (t.cool <= 0 && Math.random() < 1 / 28 && !bullets.some(b => b.owner === t)) fire(t);
+    }
+  }
+
+  function updatePlay(){
+    if (respawnT > 0) { respawnT--; if (respawnT === 0 && !over) spawnPlayer(); }
+    updatePlayer();
+    updateEnemies();
+    updateBullets();
+    if (power && player && player.alive && player.spawnT <= 0 &&
+        player.x < power.x + 16 && player.x + 16 > power.x && player.y < power.y + 16 && player.y + 16 > power.y) {
+      applyPower(power.kind);
+      power = null;
+    }
+    if (freeze > 0) freeze--;
+    if (shovel > 0) {
+      shovel--;
+      if (shovel === 0) setBaseWall(1);
+      else if (shovel < 180 && shovel % 16 === 0) setBaseWall((shovel >> 4) & 1 ? 2 : 1);
+    }
+    if (!over) {
+      if (spawnTimer > 0) spawnTimer--;
+      else if (queue.length && enemiesOnField() < 4) { trySpawnEnemy(); spawnTimer = Math.max(40, 190 - stage * 4); }
+    }
+    for (const f of fx) {
+      f.t++;
+      if (f.t >= (f.big ? 30 : 12)) { f.done = true; if (f.score) pops.push({ x:f.x, y:f.y, t:40, text:String(f.score) }); }
+    }
+    fx = fx.filter(f => !f.done);
+    for (const p of pops) p.t--;
+    pops = pops.filter(p => p.t > 0);
+    if (over) {
+      over.t++;
+      if (over.y > 96) over.y--;
+      if (over.t > (F - 96) + 120) enterTally(true);
+    } else if (!queue.length && !tanks.some(t => !t.isPlayer && t.alive)) {
+      clearT++;
+      if (clearT > 180) enterTally(false);
+    }
+  }
+
+  function enterTally(isOver){
+    saveHigh();
+    state = "clear";
+    tally = { isOver, row:0, count:0, wait:40, end:0, shown:[0,0,0,0], t:0 };
+  }
+  function updateTally(){
+    const T = tally;
+    T.t++;
+    if (T.row < 4) {
+      if (T.wait > 0) { T.wait--; return; }
+      if (T.count < kills[T.row]) { if (T.t % 8 === 0) { T.count++; sfx("tick"); } }
+      else { T.shown[T.row] = T.count; T.row++; T.count = 0; T.wait = 20; }
+    } else if (++T.end > 150) {
+      if (T.isOver) { state = "over"; overT = 0; }
+      else loadStage(stage + 1);
+    }
+  }
+
+  function loadStage(n){
+    stage = n;
+    loadMap(STAGES[(n - 1) % STAGES.length]);
+    tanks = []; bullets = []; fx = []; pops = []; power = null; player = null;
+    baseAlive = true; freeze = 0; shovel = 0; kills = [0,0,0,0]; clearT = 0; over = null; respawnT = 0;
+    const set = ENEMY_SET[(n - 1) % ENEMY_SET.length];
+    queue = [];
+    set.forEach((c, i) => { for (let k = 0; k < c; k++) queue.push(TYPES[i]); });
+    spawnIdx = 0; spawnedCount = 0; spawnTimer = 0;
+    spawnPlayer();
+    intro = 160; state = "intro";
+  }
+  function startGame(){ score = 0; lives = 3; nextLife = 20000; playerStar = 0; loadStage(1); }
+  function menu(){ state = "menu"; menuY = H; }
+  function pauseToggle(){
+    if (state === "play") { state = "pause"; sfx("pause"); }
+    else if (state === "pause") state = "play";
+  }
+
+  // ---------- 绘制 ----------
+  function hash(x, y, s){ return (((x * 73856093) ^ (y * 19349663) ^ (s * 83492791)) >>> 0) % 100 / 100; }
+  function burst(x, y, r, seed){
+    for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+      const d = Math.hypot(dx, dy);
+      const lim = r * (0.55 + 0.45 * hash(dx >> 1, dy >> 1, seed));
+      if (d > lim) continue;
+      rect(OX + x + dx, OY + y + dy, 1, 1, d < lim * 0.4 ? WHITE : d < lim * 0.75 ? "#D82800" : "#4428BC");
+    }
+  }
+  function drawSpark(x, y, t){
+    const s = [1, 2, 3, 4, 3, 2][(t >> 2) % 6], L = s * 2;
+    const cx = OX + x + 8, cy = OY + y + 8;
+    rect(cx - L, cy, L * 2 + 1, 1, WHITE);
+    rect(cx, cy - L, 1, L * 2 + 1, WHITE);
+    rect(cx - 1, cy - 1, 3, 3, WHITE);
+    for (let i = 1; i <= s; i++) {
+      rect(cx - i, cy - i, 1, 1, "#3CBCFC"); rect(cx + i, cy - i, 1, 1, "#3CBCFC");
+      rect(cx - i, cy + i, 1, 1, "#3CBCFC"); rect(cx + i, cy + i, 1, 1, "#3CBCFC");
+    }
+  }
+  function tankArt(t){
+    if (!t.isPlayer) return t.type;
+    return ["player", "basic", "power", "armor"][t.star] || "player";
+  }
+  function tankPal(t){
+    if (t.isPlayer) return "player";
+    if (t.bonus && ((tick >> 3) & 1)) return "red";
+    if (t.type === "armor") return ["enemy", "enemy", "enemy", "gold", "green"][t.hp] || "enemy";
+    return "enemy";
+  }
+  function drawSide(){
+    for (let i = 0; i < queue.length; i++) ctx.drawImage(ENEMY_ICON, 232 + (i & 1) * 8, 24 + (i >> 1) * 8);
+    drawText("IP", 232, 136, BLACK);
+    ctx.drawImage(LIFE_ICON, 232, 144);
+    drawText(String(Math.max(0, lives - 1)), 240, 144, BLACK);
+    ctx.drawImage(FLAG, 232, 184);
+    drawTextR(String(stage), 248, 200, BLACK);
+  }
+  function drawPlay(){
+    rect(0, 0, W, H, GREY);
+    rect(OX, OY, F, F, BLACK);
+    renderTerrain();
+    ctx.drawImage(terCv, OX, OY);
+    ctx.drawImage(baseAlive ? EAGLE : EAGLE_DEAD, OX + 96, OY + 192);
+    for (const t of tanks) {
+      if (!t.alive) continue;
+      if (t.spawnT > 0) { drawSpark(t.x, t.y, 60 - t.spawnT); continue; }
+      ctx.drawImage(getTank(tankArt(t), tankPal(t), t.dir, (t.anim >> 2) & 1), OX + t.x, OY + t.y);
+      if (t.shield > 0) ctx.drawImage(SHIELD[(tick >> 1) % 3], OX + t.x - 2, OY + t.y - 2);
+    }
+    for (const b of bullets) {
+      if (b.dy) rect(OX + b.x - 1, OY + b.y - 2, 3, 4, "#BCBCBC");
+      else rect(OX + b.x - 2, OY + b.y - 1, 4, 3, "#BCBCBC");
+    }
+    ctx.drawImage(grassCv, OX, OY);
+    if (power && ((tick >> 3) & 1) === 0) ctx.drawImage(POWER_TEX[power.kind], OX + power.x, OY + power.y);
+    for (const f of fx) {
+      let r;
+      if (f.t < 12) r = f.t < 4 ? 3 : f.t < 8 ? 5 : 7;
+      else r = f.t < 18 ? 11 : f.t < 24 ? 15 : 11;
+      burst(f.x | 0, f.y | 0, r, f.seed);
+    }
+    for (const p of pops) drawText(p.text, OX + p.x - p.text.length * 4, OY + p.y - 4, WHITE);
+    if (over) {
+      drawText("GAME", OX + (F - 32) / 2, OY + over.y, RED);
+      drawText("OVER", OX + (F - 32) / 2, OY + over.y + 8, RED);
+    }
+    drawSide();
+  }
+  function drawMenu(){
+    rect(0, 0, W, H, BLACK);
+    const o = menuY | 0;
+    drawText("I-", 24, 16 + o, WHITE);
+    drawTextR(score ? String(score) : "00", 96, 16 + o, WHITE);
+    drawText("HI-", 120, 16 + o, WHITE);
+    drawTextR(String(hi), 192, 16 + o, WHITE);
+    ctx.drawImage(BIG.battle, (W - BIG.battle.width) >> 1, 44 + o);
+    ctx.drawImage(BIG.city, (W - BIG.city.width) >> 1, 84 + o);
+    drawText("1 PLAYER", 88, 140 + o, WHITE);
+    if (o === 0) ctx.drawImage(getTank("player", "player", 1, (tick >> 2) & 1), 64, 136);
+  }
+  function drawIntro(){
+    if (intro > 128) {
+      rect(0, 0, W, H, BLACK);
+      const h = Math.ceil((H / 2) * (160 - intro) / 32);
+      rect(0, 0, W, h, GREY); rect(0, H - h, W, h, GREY);
+    } else if (intro > 32) {
+      rect(0, 0, W, H, GREY);
+      const s = "STAGE " + String(stage).padStart(2, " ");
+      drawText(s, (W - s.length * 8) >> 1, 104, BLACK);
+    } else {
+      drawPlay();
+      const h = Math.ceil((H / 2) * intro / 32);
+      rect(0, 0, W, h, GREY); rect(0, H - h, W, h, GREY);
+    }
+  }
+  function drawTally(){
+    const T = tally;
+    rect(0, 0, W, H, BLACK);
+    drawText("HI-SCORE", 64, 24, RED); drawTextR(String(hi), 208, 24, ORANGE);
+    drawText("STAGE", 96, 40, WHITE); drawTextR(String(stage), 168, 40, WHITE);
+    drawText("I-PLAYER", 24, 56, RED); drawTextR(String(score), 88, 72, ORANGE);
+    for (let i = 0; i < 4; i++) {
+      const y = 96 + i * 24;
+      let c = null;
+      if (i < T.row) c = T.shown[i];
+      else if (i === T.row && T.wait <= 0) c = T.count;
+      if (c !== null) {
+        drawTextR(String(c * EK[TYPES[i]].score), 64, y, WHITE);
+        drawText("PTS", 72, y, WHITE);
+        drawTextR(String(c), 120, y, WHITE);
+      }
+      drawText("←", 128, y, WHITE);
+      ctx.drawImage(getTank(TYPES[i], "enemy", 0, 0), 140, y - 4);
+    }
+    rect(96, 186, 64, 2, WHITE);
+    if (T.row >= 4) { drawText("TOTAL", 48, 192, WHITE); drawTextR(String(kills.reduce((a, b) => a + b, 0)), 120, 192, WHITE); }
+  }
+  function drawOver(){
+    rect(0, 0, W, H, BLACK);
+    ctx.drawImage(BIG.game, (W - BIG.game.width) >> 1, 72);
+    ctx.drawImage(BIG.over, (W - BIG.over.width) >> 1, 112);
+  }
+  function draw(){
+    ctx.imageSmoothingEnabled = false;
+    if (state === "menu") drawMenu();
+    else if (state === "intro") drawIntro();
+    else if (state === "play" || state === "pause") {
+      drawPlay();
+      if (state === "pause" && ((tick >> 4) & 1) === 0) drawText("PAUSE", OX + (F - 40) / 2, OY + 96, RED);
+    }
+    else if (state === "clear") drawTally();
+    else if (state === "over") drawOver();
+  }
+
+  function update(){
+    tick++;
+    if (state === "menu") { if (menuY > 0) menuY--; }
+    else if (state === "intro") { intro--; if (intro === 32) sfx("start"); if (intro <= 0) { intro = 0; state = "play"; } }
+    else if (state === "play") updatePlay();
+    else if (state === "clear") updateTally();
+    else if (state === "over") { if (++overT > 240) menu(); }
+    engine(state === "play" && !!player, !!(player && player.moving));
+  }
+  let last = performance.now(), accum = 0;
+  function frame(now){
+    requestAnimationFrame(frame);
+    accum += Math.min(100, now - last);
+    last = now;
+    while (accum >= 1000 / 60) { accum -= 1000 / 60; update(); }
+    draw();
+  }
+
+  function countSteel(){ let n = 0; for (let i = 0; i < ter.length; i++) if (ter[i] === 2) n++; return n; }
+  window.__tank = {
+    start: startGame,
+    goto(n){ loadStage(n); intro = 0; state = "play"; },
+    armor(){ if (player) { player.armor = true; player.shield = 9999; player.spawnT = 0; } },
+    snapshot(){ return { state, armor:!!(player && player.armor), steel:countSteel(), lives, score }; },
+    testSteel(){
+      const before = countSteel();
+      for (let cy = 0; cy < N; cy++) for (let cx = 0; cx < N; cx++)
+        if (ter[cy * N + cx] === 2) bulletHitsTile({ x:cx * 4 + 2, y:cy * 4 + 2, dx:1, dy:0, alive:true, isPlayer:true, power:true });
+      return { before, after:countSteel() };
+    },
+    testArmor(){
+      this.armor();
+      const livesBefore = lives;
+      hitPlayer();
+      return { livesBefore, livesAfter:lives, armor:!!(player && player.armor), playerAlive:!!(player && player.alive) };
+    }
+  };
+
+  window.addEventListener("keydown", e => {
+    initAudio();
+    if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].includes(e.code)) e.preventDefault();
+    if (e.repeat) return;
+    if (e.code in DIRKEY) { const i = dirStack.indexOf(e.code); if (i >= 0) dirStack.splice(i, 1); dirStack.push(e.code); }
+    held.add(e.code);
+    if (e.code === "KeyM") muted = !muted;
+    const startKey = e.code === "Enter" || e.code === "KeyP" || e.code === "Escape";
+    if (state === "menu" && (startKey || FIREKEY.includes(e.code))) { if (menuY > 0) menuY = 0; else startGame(); }
+    else if (state === "over" && (startKey || FIREKEY.includes(e.code))) menu();
+    else if (startKey && (state === "play" || state === "pause")) pauseToggle();
+  });
+  window.addEventListener("keyup", e => {
+    held.delete(e.code);
+    const i = dirStack.indexOf(e.code);
+    if (i >= 0) dirStack.splice(i, 1);
+  });
+  window.addEventListener("blur", () => { held.clear(); dirStack.length = 0; });
+
+  menu();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
